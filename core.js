@@ -80,5 +80,8 @@ export function teamLabel(s,season,value){return teamDefs(s,season).find((t,i)=>
 export function teamId(s,season,value){return teamDefs(s,season).find((t,i)=>t.id===value||t.name===value||DEFAULT_TEAMS[i]===value)?.id||value;}
 export function memberRank(m){return {'本部':0,'幹部':1,'一般':2}[m.leadership]??2;}
 export function positionRank(m,season){return {'隊長':0,'副隊長':1,'一般':2}[m.teamPositions?.[season]]??2;}
+// A selected team is a team roster: order by team post first.
+// The unfiltered clan roster keeps leadership priority.
+export function rosterRank(a,b,season,filteredTeam=false){return filteredTeam?(positionRank(a,season)-positionRank(b,season)||memberRank(a)-memberRank(b)):(memberRank(a)-memberRank(b));}
 export function checksFor(s,season){return s.checkDefinitions?.[season]||DEFAULT_CHECKS;}
 export function checkCompleted(value){return value===true||['○','〇','済','完了','はい','yes','true','1'].includes(String(value??'').trim().toLowerCase());}
