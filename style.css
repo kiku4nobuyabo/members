@@ -67,3 +67,9 @@
  .roster-column-choices{grid-template-columns:1fr}
  .roster-list-count{font-size:12px}
 }
+/* Per-item season progress columns (v0.3.4). Unset is not treated as completed. */
+.roster-cell-check{text-align:center;min-width:78px}
+.progress-state{display:inline-block;border-radius:4px;min-width:28px;padding:3px 7px;font-size:12px;text-align:center;border:1px solid transparent;white-space:nowrap}
+.progress-state.done{color:#276a50;background:#e7f3ec;border-color:#c9dfd0;font-weight:750}
+.progress-state.excluded{color:#6a6556;background:#f2f1ed;border-color:#e3dfd3;font-size:11px}
+.progress-state.pending{color:#667670;background:#f5f6f3;border-color:#eaeeea}
