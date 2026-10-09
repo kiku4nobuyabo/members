@@ -1,4 +1,4 @@
-export const VERSION='0.2.6';
+export const VERSION='0.3.0';
 export const uid=()=>crypto.randomUUID();
 export const clone=x=>structuredClone(x);
 export const norm=x=>String(x??'').trim();
@@ -35,6 +35,35 @@ export function previewImport(s,parsed){return parsed.rows.map(r=>{const ids=mat
 export function newMember(name,season,date,status='在籍'){const id=uid();return {id,name:norm(name),discordName:'',discordId:'',originContext:'',origin:'',joinHistory:'',note:'',role:'',leadership:'一般',group:'',teamPositions:{},checks:{},memberships:[{seasonId:season,status,since:date,note:''}],nameHistory:[{name:norm(name),date,source:'手入力'}],teamHistory:[],sourceRefs:[]};}
 export function addAlias(s,mid,name,source){name=norm(name);assert(name,'名前を入力してください');const matches=matchName(s,name);assert(!matches.some(x=>x!==mid),'この名前は別のメンバーにも紐付いています。先に名簿を確認してください');
  if(!Object.values(s.aliases).some(a=>a.memberId===mid&&a.name===name)){const id=uid();s.aliases[id]={id,name,memberId:mid,source,seasonId:null};}}
+// 一時離脱はゲームアカウント単位。旧名簿は変更せず、新しい操作から詳細な履歴を持つ。
+export const TEMP_STATUSES=['一時離脱','一時キック'];
+export const TEAM_COLORS={team1:{name:'黒',hex:'#222222'},team2:{name:'青',hex:'#2468bc'},team3:{name:'赤',hex:'#ce4040'},team4:{name:'白',hex:'#ffffff'},team5:{name:'黄',hex:'#d49b00'}};
+export function teamColor(id){return TEAM_COLORS[id]||{name:'未設定',hex:'#87928e'};}
+export function presenceStatus(m,season){return [...(m.memberships||[])].filter(x=>x.seasonId===season).at(-1)?.status||'在籍';}
+export function presenceEvent(m,season){return [...(m.presenceEvents||[])].filter(x=>x.seasonId===season).at(-1)||null;}
+export function setPresence(s,id,season,status,{date=today(),note='',source='manual',snapshotId=''}={}){
+ const m=s.members[id];assert(m&&s.seasons[season],'対象メンバー・シーズンが不正です');
+ assert(validDate(date),'在籍状態の変更日が不正です');assert(['在籍','一時離脱','一時キック','離脱','休止','過去在籍'].includes(status),'在籍状態が不正です');
+ note=norm(note);assert(note.length<=2000,'理由が長すぎます');
+ if(presenceStatus(m,season)===status)return false;
+ m.presenceEvents??=[];m.presenceEvents.push({id:uid(),seasonId:season,status,date,note,source,snapshotId,at:new Date().toISOString()});
+ m.memberships.push({seasonId:season,status,since:date,note:note||(source==='csv'?'CSVで復帰を確認':'手動で在籍状態を変更')});return true;
+}
+export function autoReturnCandidates(s,season,date,rows){
+ return [...new Set(rows.map(r=>r.memberId).filter(Boolean))].filter(id=>{
+ const m=s.members[id];if(!m||!TEMP_STATUSES.includes(presenceStatus(m,season)))return false;
+ const event=presenceEvent(m,season);const since=event?.date||m.memberships.filter(x=>x.seasonId===season).at(-1)?.since||'';
+ return !!since&&date>=since;
+ });
+}
+function teamRowsAt(s,season,team,snapshot){return (snapshot?.rows||[]).filter(r=>{
+ const m=s.members[r.memberId];return !!m&&teamId(s,season,teamAt(m,season,snapshot.date))===team;
+ });}
+export function teamStats(s,season,team,snapshot){
+ const rows=teamRowsAt(s,season,team,snapshot),stat=key=>{const nums=rows.filter(r=>r[key]!=null);return {total:nums.length?nums.reduce((sum,r)=>sum+r[key],0):null,count:nums.length,average:nums.length?nums.reduce((sum,r)=>sum+r[key],0)/nums.length:null};};
+ return {team, date:snapshot?.date||'',rows,merit:stat('meritWeek'),activity:stat('activityWeek')};
+}
+export function teamSeries(s,season,team){return orderedSnapshots(s,season).map(snapshot=>teamStats(s,season,team,snapshot));}
 export function importSnapshot(state,{seasonId,date,rows,fileName,hash,encoding,replace=false}){const s=clone(state);assert(s.seasons[seasonId],'シーズンを選んでください');assert(validDate(date),'取得日を指定してください');
  const season=s.seasons[seasonId];assert(!season.start||date>=season.start,'取得日がシーズン開始日より前です');assert(!season.end||date<=season.end,'取得日がシーズン終了日より後です');
  const existing=orderedSnapshots(s,seasonId).find(x=>weekKey(x.date)===weekKey(date));assert(!orderedSnapshots(s,seasonId).some(x=>x.hash===hash&&(x.id!==existing?.id||!replace)),'同一内容のCSVは登録済みです');assert(!existing||replace,'同じ週の登録があります。更新確認が必要です');
@@ -46,12 +75,12 @@ export function importSnapshot(state,{seasonId,date,rows,fileName,hash,encoding,
  if(!s.members[mid].memberships.some(x=>x.seasonId===seasonId))s.members[mid].memberships.push({seasonId,status:'在籍',since:date,note:'CSV取込で登録'});
  return Object.fromEntries(['name','activityWeek','meritWeek','activityTotal','meritTotal','prestige','region','gameGroup','raw'].map(k=>[k,r[k]]).concat([['memberId',mid]]));});
  assert(!(existing&&existing.hash===hash&&existing.date===date&&JSON.stringify(existing.rows)===JSON.stringify(cleanRows)),'同一内容・同じ紐付けで登録済みです');
- const id=existing?.id||uid();s.snapshots[id]={id,seasonId,date,week:weekKey(date),fileName,hash,encoding,rows:cleanRows,createdAt:new Date().toISOString(),versions:existing?[...(existing.versions||[]),{...existing,versions:undefined}]:[]};validateState(s);return s;}
-export function editMember(state,id,patch,{seasonId,date=today(),team,formationId='',teamNote='',status}={}){const s=clone(state),m=s.members[id];assert(m,'メンバーが見つかりません');assert(validDate(date),'日付が正しくありません');
+ const id=existing?.id||uid();const returned=autoReturnCandidates(s,seasonId,date,cleanRows);for(const mid of returned)setPresence(s,mid,seasonId,'在籍',{date,note:'週次CSVに再登場したため自動復帰',source:'csv',snapshotId:id});s.snapshots[id]={id,seasonId,date,week:weekKey(date),fileName,hash,encoding,rows:cleanRows,createdAt:new Date().toISOString(),versions:existing?[...(existing.versions||[]),{...existing,versions:undefined}]:[]};validateState(s);return s;}
+export function editMember(state,id,patch,{seasonId,date=today(),team,formationId='',teamNote='',status,presenceNote=''}={}){const s=clone(state),m=s.members[id];assert(m,'メンバーが見つかりません');assert(validDate(date),'日付が正しくありません');
  for(const key of ['name','discordName','discordId','originContext','origin','joinHistory','note','role','leadership','group']){if(patch[key]!==undefined){const value=norm(patch[key]);assert(value.length<=20000,'入力が長すぎます');if(key==='name'&&value!==m.name){assert(value,'名前を入力してください');addAlias(s,id,value,'改名');addAlias(s,id,m.name,'旧名');m.nameHistory.push({name:value,previous:m.name,date,source:'改名'});}m[key]=value;}}
  if(patch.teamPosition!==undefined){m.teamPositions??={};m.teamPositions[seasonId]=norm(patch.teamPosition);}
  if(patch.checks){m.checks[seasonId]={...m.checks[seasonId],...patch.checks};}
- if(status){assert(s.seasons[seasonId],'シーズンがありません');const prev=m.memberships.filter(x=>x.seasonId===seasonId).at(-1);if(!prev||prev.status!==status)m.memberships.push({seasonId,status,since:date,note:'手動変更'});}
+ if(status)setPresence(s,id,seasonId,status,{date,note:presenceNote||'',source:'manual'});
  if(team!==undefined&&teamAt(m,seasonId,date)!==team){assert(!m.teamHistory.some(t=>t.seasonId===seasonId&&t.date===date),'同じ日の隊履歴があります。隊履歴の訂正から変更してください');m.teamHistory.push({id:uid(),seasonId,date,team:norm(team),formationId,note:norm(teamNote)});}
  validateState(s);return s;}
 export function linkLegacy(state,recordIds,mid,{createName,seasonId='s4',remember=false}={}){const s=clone(state);if(createName){const m=newMember(createName,seasonId,'','過去在籍');s.members[m.id]=m;mid=m.id;addAlias(s,mid,createName,'過去資料確認');}assert(s.members[mid],'人物を選んでください');
@@ -62,7 +91,7 @@ export function validateState(s){assert(s&&s.schemaVersion===1,'対応してい�
  assert(!s.teamSettings||typeof s.teamSettings==='object'&&!Array.isArray(s.teamSettings),'隊設定が不正です');assert(!s.checkDefinitions||typeof s.checkDefinitions==='object'&&!Array.isArray(s.checkDefinitions),'チェック定義が不正です');assert(!s.groupNames||Array.isArray(s.groupNames),'グループ設定が不正です');
  assert(s.seasons[s.meta.activeSeasonId],'既定シーズンがありません');const keys=new Set();
  for(const [id,ss] of Object.entries(s.seasons)){assert(ss.id===id&&norm(ss.name),'シーズンが不正です');assert((!ss.start||validDate(ss.start))&&(!ss.end||validDate(ss.end))&&(!ss.start||!ss.end||ss.start<=ss.end),'シーズン期間が不正です');}
- for(const [id,m] of Object.entries(s.members)){assert(m.id===id&&norm(m.name),'人物データが不正です');for(const k of ['memberships','nameHistory','teamHistory','sourceRefs'])assert(Array.isArray(m[k]),'人物履歴が不正です');assert(m.checks&&typeof m.checks==='object','チェック項目が不正です');for(const x of m.memberships)assert(s.seasons[x.seasonId]&&(!x.since||validDate(x.since)),'所属シーズン・日付が不正です');for(const x of m.teamHistory){assert(s.seasons[x.seasonId]&&validDate(x.date),'隊履歴が不正です');const k=id+'|'+x.seasonId+'|'+x.date;assert(!keys.has(k),'同じ日の隊履歴が重複しています');keys.add(k);}}
+ for(const [id,m] of Object.entries(s.members)){assert(m.id===id&&norm(m.name),'人物データが不正です');for(const k of ['memberships','nameHistory','teamHistory','sourceRefs'])assert(Array.isArray(m[k]),'人物履歴が不正です');assert(m.checks&&typeof m.checks==='object','チェック項目が不正です');for(const x of m.memberships)assert(s.seasons[x.seasonId]&&(!x.since||validDate(x.since)),'所属シーズン・日付が不正です');if(m.presenceEvents!==undefined){assert(Array.isArray(m.presenceEvents),'在籍イベントが不正です');for(const x of m.presenceEvents)assert(s.seasons[x.seasonId]&&validDate(x.date)&&['在籍','一時離脱','一時キック','離脱','休止','過去在籍'].includes(x.status)&&typeof x.note==='string','在籍イベントが不正です');}for(const x of m.teamHistory){assert(s.seasons[x.seasonId]&&validDate(x.date),'隊履歴が不正です');const k=id+'|'+x.seasonId+'|'+x.date;assert(!keys.has(k),'同じ日の隊履歴が重複しています');keys.add(k);}}
  for(const a of Object.values(s.aliases))assert(s.members[a.memberId]&&norm(a.name),'別名の参照が不正です');
  for(const f of Object.values(s.formations))assert(s.seasons[f.seasonId]&&validDate(f.start)&&Array.isArray(f.teams),'隊編成が不正です');
  for(const c of Object.values(s.contributions))assert(s.members[c.memberId]&&s.seasons[c.seasonId]&&validDate(c.date),'貢献履歴が不正です');
