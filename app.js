@@ -2,12 +2,13 @@ import * as C from './core.js';
 import {SharedStore} from './api.js';
 import {parseGroupWorkbook,previewGroupImport,applyGroupImport} from './group-import.js';
 import {downloadExcel,downloadTeamCSV} from './export.js';
+import {MEMBER_COLUMNS,normalizeColumns,filtersForColumns,sortKeysForColumns} from './member-view.js';
 const $=s=>document.querySelector(s),store=new SharedStore();
 const E=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const N=x=>x==null?'—':Number(x).toLocaleString('ja-JP');
 const DT=s=>s?new Date(s).toLocaleString('ja-JP',{timeZone:'Asia/Tokyo'}):'—';
 let state=null,revision=0,updatedAt='',season='s5',page='dashboard',detailId='',teamDetailId='',returnFromDetail='members',demo=false,busy=false,dirty=false;
-let groupImportPreview=null,groupImportFile='',importData=null,importRows=[],logs=[],logsLoaded=false,query='',teamFilter='',sortKey='name',roleFilter='all',groupFilter='',checkFilter='',checkStatus='incomplete',presenceFilter='',reviewFilter='pending',reviewQuery='',listPage=0,pendingSave=null;
+let groupImportPreview=null,groupImportFile='',importData=null,importRows=[],logs=[],logsLoaded=false,query='',teamFilter='',sortKey='rankName',sortDescending=false,memberColumns=null,roleFilter='all',groupFilter='',checkFilter='',checkStatus='incomplete',presenceFilter='',reviewFilter='pending',reviewQuery='',listPage=0,pendingSave=null;
 const pageNames={dashboard:'一門のようす',members:'メンバー名簿',import:'週次CSV取込',teams:'分隊名簿',management:'名簿・分隊の管理',review:'移行・照合確認',audit:'変更履歴',settings:'保存と設定'};
 const fieldNames={name:'ゲーム内名前',discordName:'Discord名前',discordId:'Discord ID',originContext:'元所属・経緯（原文）',origin:'元所属',joinHistory:'加入経緯',note:'メモ',role:'役割',teamHistory:'隊履歴',nameHistory:'名前履歴',memberships:'シーズン所属',presenceEvents:'一時離脱・復帰履歴',checks:'運営チェック',memberId:'紐付け先',snapshots:'週次CSV',legacy:'過去実績',formations:'隊編成',meta:'全体設定',seasons:'シーズン',aliases:'別名',issues:'要確認',sources:'元資料',contributions:'貢献履歴'};
 const fmtDiff=x=>x==null?'（なし）':typeof x==='object'?JSON.stringify(x,null,2):String(x);
@@ -63,16 +64,110 @@ function dashboard(){const ms=membersInSeason(),snaps=C.orderedSnapshots(state,s
  `<section class="panel"><h2>5隊の週次推移を比較</h2><div class="split"><div><h3>戦功</h3>${teamComparisonChart(series.map(x=>({...x,series:x.series.slice(-12)})),'merit')}</div><div><h3>活躍度</h3>${teamComparisonChart(series.map(x=>({...x,series:x.series.slice(-12)})),'activity')}</div></div><p class="unitnote">週の取得日時点の所属隊に集計。記録のない隊員は平均・合計の対象に含めません。</p></section>`+
  (snaps.length?`<section class="panel"><h2>週次記録一覧</h2>${snapshotTable(snaps)}</section>`:'');}
 function membersInSeason(){return C.membersIn(state,season);}
-function membersView(){const checks=C.checksFor(state,season);return header('メンバー名簿','役職・隊・グループ・シーズン進捗で絞り込めます。',button('メンバーを追加','add-member','','primary'))+`<div class="filters extended-filters"><input id="member-search" placeholder="名前、旧名、Discord、元所属…" aria-label="人物検索" value="${E(query)}"><select id="team-filter">${options([['','すべての隊'],...C.teamDefs(state,season).map(t=>[t.id,t.name]),['__none','隊未設定']],teamFilter)}</select><select id="role-filter">${options([['all','全員'],['officers','幹部（本部＋幹部）'],['general','一般のみ']],roleFilter)}</select><select id="group-filter">${options([['','すべてのグループ'],...groupNames().map(x=>[x,x]),['__none','グループ未設定']],groupFilter)}</select><select id="check-filter">${options([['','進捗項目：すべて'],...checks.map(x=>[x.id,x.name])],checkFilter)}</select><select id="check-status">${options([['incomplete','未完了'],['complete','完了'],['none','未入力']],checkStatus)}</select><select id="presence-filter">${options([['','全在籍状態'],['在籍','在籍'],['一時離脱','一時離脱'],['一時キック','一時キック'],['離脱','離脱']],presenceFilter)}</select><select id="member-sort">${options([['name','役職順・名前順'],['meritWeek','役職順・今週戦功'],['meritTotal','役職順・総戦功'],['delta','役職順・前週差'],['activityWeek','役職順・活躍度']],sortKey)}</select></div><p class="subline" id="member-count" style="margin-bottom:12px"></p><div class="tablewrap"><table><thead><tr><th>ゲーム内名前 / Discord</th><th>一門役職</th><th>在籍状態</th><th>現在の隊 / 隊役職</th><th>グループ</th><th>今週戦功</th><th>総戦功</th><th>前週戦功</th><th>前週差</th><th>今週活躍度</th><th>所属地方</th></tr></thead><tbody id="member-rows"></tbody></table></div><div class="pagination" id="member-pagination"></div><p class="unitnote">全員表示は本部 → 幹部 → 一般、隊で絞り込むと隊長 → 副隊長 → 一般を優先します。</p>`;}
+function isMobileRoster(){return typeof window.matchMedia==='function'?window.matchMedia('(max-width: 680px)').matches:(typeof window.innerWidth==='number'&&window.innerWidth<=680);}
+function columnStorageKey(){return 'clan-ledger-roster-columns-v1-'+(isMobileRoster()?'mobile':'desktop');}
+function visibleRosterColumns(){
+ if(memberColumns===null){let saved=null;try{saved=JSON.parse(localStorage.getItem(columnStorageKey()));}catch{}memberColumns=normalizeColumns(saved,isMobileRoster());}
+ return memberColumns;
+}
+function applyRosterColumns(cols){
+ memberColumns=normalizeColumns(cols,isMobileRoster());
+ const cleared=filtersForColumns(memberColumns,{roleFilter,teamFilter,presenceFilter,groupFilter,checkFilter,checkStatus});
+ ({roleFilter,teamFilter,presenceFilter,groupFilter,checkFilter,checkStatus}=cleared);
+ if(!sortKeysForColumns(memberColumns).some(([key])=>key===sortKey)) {sortKey=memberColumns.includes('role')?'rankName':'name';sortDescending=false;}
+ listPage=0;
+ try{localStorage.setItem(columnStorageKey(),JSON.stringify(memberColumns));}catch{}
+}
+function filterActiveCount(){return Number(Boolean(query.trim()))+Number(Boolean(teamFilter))+Number(roleFilter!=='all')+Number(Boolean(groupFilter))+Number(Boolean(presenceFilter))+Number(Boolean(checkFilter));}
+function rosterColumnValue(id,{m,v,team}){
+ const cells={
+  name:()=>`${button(m.name,'detail',`data-id="${E(m.id)}"`,'link')}<br><small>${E(m.discordName||'—')}</small>`,
+  role:()=>E(m.leadership||'一般'),
+  presence:()=>presenceBadge(m),
+  team:()=>`<span class="tag">${E(C.teamLabel(state,season,team))}</span><br><small>${E(m.teamPositions?.[season]||'一般')}</small>`,
+  group:()=>E(m.group||'—'),
+  meritWeek:()=>N(v.current?.meritWeek),
+  meritTotal:()=>N(v.current?.meritTotal),
+  meritPrevious:()=>N(v.previous?.meritWeek),
+  delta:()=>`${v.delta>0?'+':''}${N(v.delta)}`,
+  activityWeek:()=>N(v.current?.activityWeek),
+  region:()=>E(v.current?.region||'—'),
+  checks:()=>{const defs=C.checksFor(state,season),vals=m.checks?.[season]||{},done=defs.filter(d=>C.checkCompleted(vals[d.id])).length,excluded=defs.filter(d=>vals[d.id]==='対象外').length;return defs.length?`<span class="roster-progress" title="完了${done}件・対象外${excluded}件・全${defs.length}項目">${done} / ${defs.length} 完了${excluded?'（対象外'+excluded+'）':''}</span>`:'—';}
+ };
+ const numeric=['meritWeek','meritTotal','meritPrevious','delta','activityWeek'].includes(id);
+ return `<td class="${numeric?'numeric ':''}roster-cell-${id} ${id==='delta'&&v.delta<0?'negative':''}">${cells[id]()}</td>`;
+}
+function membersView(){
+ const cols=visibleRosterColumns(),checks=C.checksFor(state,season),sortOpts=sortKeysForColumns(cols);
+ if(!sortOpts.some(([k])=>k===sortKey)){sortKey=cols.includes('role')?'rankName':'name';sortDescending=false;}
+ const show=id=>cols.includes(id),filterFields=[];
+ if(show('team'))filterFields.push(`<label>隊<select id="team-filter">${options([['','すべての隊'],...C.teamDefs(state,season).map(t=>[t.id,t.name]),['__none','隊未設定']],teamFilter)}</select></label>`);
+ if(show('role'))filterFields.push(`<label>一門役職<select id="role-filter">${options([['all','全員'],['officers','幹部（本部＋幹部）'],['general','一般のみ']],roleFilter)}</select></label>`);
+ if(show('group'))filterFields.push(`<label>グループ<select id="group-filter">${options([['','すべてのグループ'],...groupNames().map(x=>[x,x]),['__none','グループ未設定']],groupFilter)}</select></label>`);
+ if(show('presence'))filterFields.push(`<label>在籍状態<select id="presence-filter">${options([['','全在籍状態'],['在籍','在籍'],['一時離脱','一時離脱'],['一時キック','一時キック'],['離脱','離脱']],presenceFilter)}</select></label>`);
+ if(show('checks'))filterFields.push(`<label>進捗項目<select id="check-filter">${options([['','進捗項目：すべて'],...checks.map(x=>[x.id,x.name])],checkFilter)}</select></label><label>進捗状態<select id="check-status" ${checkFilter?'':'disabled'}>${options([['incomplete','未完了'],['complete','完了'],['none','未入力'],['excluded','対象外']],checkStatus)}</select></label>`);
+ return header('メンバー名簿','表示項目を選んで、必要な人・情報だけを確認できます。',button('表示項目','member-columns','','roster-columns-button'))+
+ `<div class="roster-toolbar"><label class="roster-search"><span>名前・Discord等で検索</span><input id="member-search" type="search" placeholder="名前、旧名、Discord…" aria-label="人物検索" value="${E(query)}"></label>`+
+ `<details id="member-filter-panel" class="roster-filter-panel" ${isMobileRoster()?'':'open'}><summary>絞り込み <span id="filter-active-indicator" class="roster-filter-count"></span></summary><div class="roster-filter-content">${filterFields.length?`<div class="roster-filter-grid">${filterFields.join('')}</div>`:'<p class="unitnote">現在の表示項目に絞り込み条件はありません。</p>'}<div class="roster-filter-actions">${button('絞り込みを解除','reset-member-filters','','roster-reset')}</div></div></details>`+
+ `<section class="roster-sort-panel" aria-label="並び替え"><label for="member-sort">並び替え</label><select id="member-sort">${options(sortOpts,sortKey)}</select>${button(sortDescending?'降順 ↓':'昇順 ↑','member-sort-direction',`aria-label="並び順を${sortDescending?'昇順':'降順'}に変更"`,'roster-sort-dir')}</section></div>`+
+ `<p class="subline roster-list-count" id="member-count"></p><div class="tablewrap roster-tablewrap"><table class="roster-table"><thead><tr id="member-table-head">${MEMBER_COLUMNS.filter(c=>show(c.id)).map(c=>`<th scope="col">${E(c.label)}</th>`).join('')}</tr></thead><tbody id="member-rows"></tbody></table></div><div class="pagination" id="member-pagination"></div><p class="unitnote">表示項目はPC・スマホそれぞれのブラウザで記憶します。非表示の項目による絞り込み・ソートは自動解除します。</p>`;
+}
+function rosterSortValue(entry,key){const {m,v,team}=entry;
+ if(key==='team')return C.teamLabel(state,season,team);
+ if(key==='group')return m.group||'';
+ if(key==='presence')return C.presenceStatus(m,season);
+ if(key==='region')return v.current?.region||'';
+ if(key==='checks')return C.checksFor(state,season).filter(d=>C.checkCompleted(m.checks?.[season]?.[d.id])).length;
+ if(key==='meritPrevious')return v.previous?.meritWeek;
+ if(key==='delta')return v.delta;
+ return v.current?.[key]??null;
+}
+function compareRosterEntries(a,b){
+ const dir=sortDescending?-1:1;
+ if(teamFilter&&teamFilter!=='__none'){
+  const pos=C.positionRank(a.m,season)-C.positionRank(b.m,season);
+  if(pos)return pos;
+ }
+ if(sortKey==='rankName'){
+  const ra=C.memberRank(a.m)-C.memberRank(b.m);
+  return ra||dir*a.m.name.localeCompare(b.m.name,'ja');
+ }
+ if(sortKey==='name')return dir*a.m.name.localeCompare(b.m.name,'ja');
+ const av=rosterSortValue(a,sortKey),bv=rosterSortValue(b,sortKey);
+ // Missing values always go last in both directions; unrecorded is not zero.
+ if(av==null||av==='')return bv==null||bv===''?a.m.name.localeCompare(b.m.name,'ja'):1;
+ if(bv==null||bv==='')return -1;
+ const result=typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv),'ja');
+ return dir*result||a.m.name.localeCompare(b.m.name,'ja');
+}
 function groupNames(){return [...new Set([...(state.groupNames||[]),...Object.values(state.members).map(m=>m.group).filter(Boolean)])].sort((a,b)=>a.localeCompare(b,'ja'));}
 function presenceBadge(m){const status=C.presenceStatus(m,season);return status==='在籍'?'<span class="tag">在籍</span>':`<span class="tag ${C.TEMP_STATUSES.includes(status)?'warn':''}" title="${E(C.presenceEvent(m,season)?.note||'')}">${E(status)}</span>`;}
 function teamNames(){return C.teamDefs(state,season).map(t=>t.name);}
 function currentTeam(m){return C.teamId(state,season,C.teamAt(m,season));}
-function renderMemberRows(){let list=membersInSeason().map(m=>({m,v:C.metrics(state,m.id,season),team:currentTeam(m)}));const q=query.trim().toLocaleLowerCase();list=list.filter(({m,team})=>(!q||[m.name,m.discordName,m.discordId,m.originContext,m.origin,m.note,...m.nameHistory.map(x=>x.name),...Object.values(state.aliases).filter(a=>a.memberId===m.id).map(a=>a.name)].join(' ').toLocaleLowerCase().includes(q))&&(!teamFilter||(teamFilter==='__none'?!team:team===teamFilter))&&(roleFilter==='all'||(roleFilter==='officers'?C.memberRank(m)<2:C.memberRank(m)===2))&&(!presenceFilter||C.presenceStatus(m,season)===presenceFilter)&&(!groupFilter||(groupFilter==='__none'?!m.group:m.group===groupFilter))&&(!checkFilter||(checkStatus==='none'?(m.checks?.[season]?.[checkFilter]===undefined||m.checks?.[season]?.[checkFilter]===''):C.checkCompleted(m.checks?.[season]?.[checkFilter])===(checkStatus==='complete'))));
- list.sort((a,b)=>C.rosterRank(a.m,b.m,season,Boolean(teamFilter&&teamFilter!=='__none'))||(sortKey==='name'?a.m.name.localeCompare(b.m.name,'ja'):(sortKey==='delta'?(b.v.delta??-Infinity)-(a.v.delta??-Infinity):(b.v.current?.[sortKey]??-Infinity)-(a.v.current?.[sortKey]??-Infinity))||a.m.name.localeCompare(b.m.name,'ja')));
- const pages=Math.max(1,Math.ceil(list.length/50));listPage=Math.max(0,Math.min(listPage,pages-1));$('#member-count').textContent=`${list.length} 名を表示 · ${C.orderedSnapshots(state,season).at(-1)?.date||'週次記録なし'}`;
- $('#member-rows').innerHTML=list.slice(listPage*50,listPage*50+50).map(({m,v,team})=>`<tr><td>${button(m.name,'detail',`data-id="${m.id}"`,'link')}<br><small>${E(m.discordName||'—')}</small></td><td>${E(m.leadership||'一般')}</td><td>${presenceBadge(m)}</td><td><span class="tag">${E(C.teamLabel(state,season,team))}</span><br><small>${E(m.teamPositions?.[season]||'一般')}</small></td><td>${E(m.group||'—')}</td><td class="numeric">${N(v.current?.meritWeek)}</td><td class="numeric">${N(v.current?.meritTotal)}</td><td class="numeric">${N(v.previous?.meritWeek)}</td><td class="numeric ${v.delta<0?'negative':''}">${v.delta>0?'+':''}${N(v.delta)}</td><td class="numeric">${N(v.current?.activityWeek)}</td><td>${E(v.current?.region||'—')}</td></tr>`).join('')||'<tr><td colspan="11">該当する人物はいません。</td></tr>';
- $('#member-pagination').innerHTML=button('前へ','member-prev',listPage===0?'disabled':'')+`<span>${listPage+1} / ${pages}</span>`+button('次へ','member-next',listPage>=pages-1?'disabled':'');}
+function renderMemberRows(){
+ const cols=visibleRosterColumns();
+ let list=membersInSeason().map(m=>({m,v:C.metrics(state,m.id,season),team:currentTeam(m)}));
+ const q=query.trim().toLocaleLowerCase();
+ list=list.filter(({m,team})=>(!q||[m.name,m.discordName,m.discordId,...m.nameHistory.map(x=>x.name),...Object.values(state.aliases).filter(a=>a.memberId===m.id).map(a=>a.name)].join(' ').toLocaleLowerCase().includes(q))
+ &&(!cols.includes('team')||!teamFilter||(teamFilter==='__none'?!team:team===teamFilter))
+ &&(!cols.includes('role')||roleFilter==='all'||(roleFilter==='officers'?C.memberRank(m)<2:C.memberRank(m)===2))
+ &&(!cols.includes('presence')||!presenceFilter||C.presenceStatus(m,season)===presenceFilter)
+ &&(!cols.includes('group')||!groupFilter||(groupFilter==='__none'?!m.group:m.group===groupFilter))
+ &&(!cols.includes('checks')||!checkFilter||(checkStatus==='none'?(m.checks?.[season]?.[checkFilter]===undefined||m.checks?.[season]?.[checkFilter]===''):checkStatus==='excluded'?m.checks?.[season]?.[checkFilter]==='対象外':C.checkCompleted(m.checks?.[season]?.[checkFilter])===(checkStatus==='complete'))));
+ list.sort(compareRosterEntries);
+ const pages=Math.max(1,Math.ceil(list.length/50));listPage=Math.max(0,Math.min(listPage,pages-1));
+ $('#member-count').textContent=`${list.length} 名を表示 · ${C.orderedSnapshots(state,season).at(-1)?.date||'週次記録なし'} · ${cols.length}列表示`;
+ const badge=$('#filter-active-indicator');if(badge)badge.textContent=filterActiveCount()?`（${filterActiveCount()}条件を適用中）`:'（条件なし）';
+ $('#member-rows').innerHTML=list.slice(listPage*50,listPage*50+50).map(entry=>`<tr>${cols.map(id=>rosterColumnValue(id,entry)).join('')}</tr>`).join('')||`<tr><td colspan="${cols.length}">該当する人物はいません。</td></tr>`;
+ $('#member-pagination').innerHTML=button('前へ','member-prev',listPage===0?'disabled':'')+`<span>${listPage+1} / ${pages}</span>`+button('次へ','member-next',listPage>=pages-1?'disabled':'');
+}
+async function editMemberColumns(){
+ const cols=visibleRosterColumns();
+ const body=`<p class="subline">名簿に表示する列を選んでください。ゲーム内名前は常に表示します。設定はこのブラウザの${isMobileRoster()?'スマホ':'PC'}表示にだけ保存されます。</p><div class="roster-column-choices">${MEMBER_COLUMNS.map(c=>`<label class="roster-column-choice"><input type="checkbox" name="col_${c.id}" value="1" ${cols.includes(c.id)?'checked':''} ${c.id==='name'?'disabled':''}>${E(c.label)}${c.id==='name'?'（固定）':''}</label>`).join('')}</div><p class="unitnote">非表示にした列の絞り込み条件・ソート指定は自動的に解除されます。</p>`;
+ const d=await modalForm('表示項目を選ぶ',body,'表示を更新');if(!d)return;
+ applyRosterColumns(['name',...MEMBER_COLUMNS.filter(c=>c.id!=='name'&&d['col_'+c.id]).map(c=>c.id)]);
+ render();
+}
 function memberForm(m){const check=m.checks?.[season]||{},defs=C.checksFor(state,season);return `<form id="member-form" class="formgrid" data-id="${m.id}">${[['name','ゲーム内名前'],['discordName','Discord名前'],['discordId','Discord ID（原文）'],['role','役割（原文）'],['origin','元所属'],['joinHistory','加入経緯']].map(([k,l])=>`<label>${l}<input name="${k}" value="${E(m[k])}" ${k==='name'?'required':''} maxlength="500"></label>`).join('')}<label>一門内役職<select name="leadership">${options([['一般','一般'],['幹部','幹部'],['本部','本部']],m.leadership||'一般')}</select></label><div class="full unitnote">所属グループ：${E(m.group||'未設定')}（変更は「保存と設定」からExcel一括インポート）</div><label class="full">ざっくり元所属とか経緯（原文）<textarea name="originContext">${E(m.originContext)}</textarea></label><label class="full">自由記述メモ<textarea name="note">${E(m.note)}</textarea></label><div class="full"><h3>シーズン進捗 · ${E(state.seasons[season].name)}</h3><p class="unitnote">項目は管理・記録の「名簿・分隊の管理」から追加・変更できます。未入力／完了／対象外を選べます。</p></div>${defs.map(x=>`<label>${E(x.name)}<select name="check_${E(x.id)}">${options([['','未入力'],['○','完了'],['対象外','対象外']],C.checkCompleted(check[x.id])?'○':check[x.id]==='対象外'?'対象外':'')}</select></label>`).join('')}<label>現在の隊<select name="team">${options([['','未設定'],...C.teamDefs(state,season).map(t=>[t.id,t.name])],currentTeam(m))}</select></label><label>隊内役職<select name="teamPosition">${options([['一般','一般'],['副隊長','副隊長'],['隊長','隊長']],m.teamPositions?.[season]||'一般')}</select></label><label>変更日<input name="date" type="date" required value="${C.today()}"></label><label>所属状態<select name="status">${options(['在籍','一時離脱','一時キック','離脱','休止','過去在籍'].map(x=>[x,x]),C.presenceStatus(m,season))}</select></label><label>隊変更メモ<input name="teamNote" placeholder="隊を変更する理由"></label><label>在籍状態の理由（任意）<input name="presenceNote" maxlength="2000" placeholder="友好一門へ移動 / 捕虜化など"></label><div class="full actions"><button type="submit" class="primary" ${demo?'disabled':''}>変更を共有DBへ保存</button><span class="muted">CSV取込では、この入力欄は上書きされません。</span></div></form>`;}
 function detail(){const m=state.members[detailId];if(!m){detailId='';return membersView();}const v=C.metrics(state,m.id,season),hist=C.history(state,m.id,season),legacy=Object.values(state.legacy).filter(r=>r.memberId===m.id),contrib=Object.values(state.contributions).filter(r=>r.memberId===m.id);
  return button('← 名簿に戻る','back','','back')+header(m.name,`内部ID：${m.id}`,button('この人物の変更履歴','person-audit',`data-id="${m.id}"`))+
@@ -106,6 +201,7 @@ function teamRecordView(){const t=C.teamDefs(state,season).find(x=>x.id===teamDe
  `<section class="panel"><h2>週ごとの実績</h2><div class="tablewrap"><table><thead><tr><th>取得日</th><th>記録人数</th><th>戦功</th><th>戦功平均</th><th>活躍度</th><th>活躍度平均</th></tr></thead><tbody>${[...series].reverse().map(x=>`<tr><td>${E(x.date)}</td><td>${x.rows.length}名</td><td class="numeric">${N(x.merit.total)}</td><td class="numeric">${N(x.merit.average==null?null:Math.round(x.merit.average))}</td><td class="numeric">${N(x.activity.total)}</td><td class="numeric">${N(x.activity.average==null?null:Math.round(x.activity.average))}</td></tr>`).join('')||'<tr><td colspan="6">週次記録がありません。</td></tr>'}</tbody></table></div><p class="unitnote">各週の取得日時点の隊所属を基準に集計。後から隊を移動しても過去の実績は移動しません。</p></section>`;
 }
 function managementView(){return header('名簿・分隊の管理','運営担当者向けの設定・名簿出力。普段の確認は「メンバー名簿」「分隊名簿」を利用してください。')+
+ `<section class="panel"><h2>メンバーの追加</h2><p>新しいゲームアカウントを名簿に登録します。</p>${button('メンバーを追加','add-member','','primary')}</section>`+
  `<section class="panel"><h2>分隊の設定・編成</h2><div class="actions">${button('隊名を編集','edit-teams')}${button('編成を記録','new-formation')}</div><p class="unitnote">隊の一括再編が必要な場合のみ「編成を記録」を使用します。隊所属を一括変更し、日付と変更理由を履歴に残す機能です。</p><details class="details"><summary>過去の編成記録</summary>${Object.values(state.formations).filter(f=>f.seasonId===season).sort((a,b)=>b.start.localeCompare(a.start)).map(f=>`<p><strong>${E(f.start)}〜 ${E(f.name)}</strong><br>${E(f.note)}</p>`).join('')||'記録はありません'}</details></section>`+
  `<section class="panel"><h2>進捗項目の設定</h2><p>Discord加入・出生済など、シーズン単位のチェック項目を管理します。</p>${button('進捗項目を管理','edit-checks')}</section>`+
  `<section class="panel"><h2>隊分け表を出力</h2><div class="actions">${button('隊分け表 Excel','export','data-format="team"')}${button('隊分け表 CSV','team-csv')}</div></section>`;}
@@ -126,8 +222,8 @@ document.addEventListener('input',e=>{const t=e.target;if(t.id==='member-search'
 document.addEventListener('change',async e=>{try{const t=e.target;
  if(t.id==='season-select'){if((dirty||importRows.length)&&!confirm('編集中の内容を閉じてシーズンを切り替えますか？')){t.value=season;return;}season=t.value;dirty=false;importData=null;importRows=[];detailId='';render();}
  else if(t.id==='team-filter'){teamFilter=t.value;listPage=0;renderMemberRows();}
- else if(t.id==='member-sort'){sortKey=t.value;renderMemberRows();}
- else if(['role-filter','group-filter','check-filter','check-status','presence-filter'].includes(t.id)){({'role-filter':v=>roleFilter=v,'group-filter':v=>groupFilter=v,'check-filter':v=>checkFilter=v,'check-status':v=>checkStatus=v,'presence-filter':v=>presenceFilter=v}[t.id])(t.value);listPage=0;renderMemberRows();}
+ else if(t.id==='member-sort'){sortKey=t.value;sortDescending=['meritWeek','meritTotal','meritPrevious','delta','activityWeek','checks'].includes(sortKey);listPage=0;render();}
+ else if(['role-filter','group-filter','check-filter','check-status','presence-filter'].includes(t.id)){({'role-filter':v=>roleFilter=v,'group-filter':v=>groupFilter=v,'check-filter':v=>checkFilter=v,'check-status':v=>checkStatus=v,'presence-filter':v=>presenceFilter=v}[t.id])(t.value);listPage=0;if(t.id==='check-filter'&&$('#check-status'))$('#check-status').disabled=!checkFilter;renderMemberRows();}
  else if(t.id==='review-filter'){reviewFilter=t.value;renderReviewRows();}
  else if(t.id==='audit-member'){auditMember=t.value;$('#audit-rows').innerHTML=auditRows();}
  else if(t.id==='only-unmatched')renderImportRows();
@@ -157,6 +253,9 @@ document.addEventListener('click',async e=>{const b=e.target.closest('[data-acti
  else if(a==='reconnect')await reconnect();
  else if(a==='operator'){const d=await modalForm('操作者名',`<label>表示名<input name="operator" value="${E(operator())}" required maxlength="80"></label>`);if(d){C.assert(d.operator.trim(),'名前を入力してください');if(!demo)await store.changeOperator(d.operator);else sessionStorage.setItem('clan-ledger-operator',d.operator.trim());b.textContent='操作者：'+operator();}}
  else if(a==='member-prev'||a==='member-next'){listPage+=a==='member-prev'?-1:1;renderMemberRows();}
+  else if(a==='member-columns')await editMemberColumns();
+  else if(a==='member-sort-direction'){sortDescending=!sortDescending;listPage=0;render();}
+  else if(a==='reset-member-filters'){query='';teamFilter='';roleFilter='all';groupFilter='';checkFilter='';checkStatus='incomplete';presenceFilter='';listPage=0;render();}
  else if(a==='commit-csv')await commitCSV();
  else if(a==='cancel-csv'){importRows=[];importData=null;render();}
  else if(a==='add-member')await addMember();
@@ -195,6 +294,8 @@ async function contributionDialog(mid){const d=await modalForm('貢献の事実�
 async function backup(){const b=demo?C.buildBackup(state,logs,revision):await store.backup();C.validateBackup(b);download('clan-ledger-backup-'+C.today()+'-r'+b.revision+'.json',b);toast('バックアップを書き出しました');return b;}
 async function restore(b){const initial=Object.keys(state.members).length===0,d=await modalForm(initial?'初期データを登録':'バックアップから復元',`<p>読み込むデータ：${Object.keys(b.state.members).length}名 / ${Object.keys(b.state.snapshots).length}週次記録 / ${b.audit.length}編集ログ</p><p class="subline">${initial?'初期データまたはバックアップを共有DBへ登録します。':'現在の人物情報と履歴データを、このバックアップの時点へ置き換えます。現在DBにある編集ログは消しません。'}</p><label style="margin-top:15px">確認のため「${initial?'初期登録':'復元'}」と入力<input name="confirm" required autocomplete="off"></label>`,initial?'初期登録する':'復元する');if(!d)return;C.assert(d.confirm===(initial?'初期登録':'復元'),'確認文字が一致しません');const op=await ensureOperator();if(!op)return;if(!initial)await backup();const kind=initial&&b.audit.length===0?'initialize':'restore';if(await save(b.state,kind,initial?'初期データ・過去ログを登録':'バックアップ '+b.exportedAt+' を復元',b.audit)){season=state.meta.activeSeasonId;render();}}
 function snapshotDialog(id){const s=state.snapshots[id];const html=`<h2>${E(s.date)} の週次記録</h2><p>${E(s.fileName)} · ${s.rows.length}名</p><div class="tablewrap" style="margin-top:15px"><table><thead><tr><th>当時の名前</th><th>現在の人物</th><th>今週戦功</th><th>今週活躍度</th></tr></thead><tbody>${s.rows.map(r=>`<tr><td>${E(r.name)}</td><td>${E(state.members[r.memberId]?.name)}</td><td>${N(r.meritWeek)}</td><td>${N(r.activityWeek)}</td></tr>`).join('')}</tbody></table></div>${s.versions.length?`<details class="details"><summary>訂正前の記録 ${s.versions.length}件</summary>${s.versions.map(v=>`<details><summary>${E(v.date)} · ${E(v.fileName)}</summary><pre>${E(JSON.stringify(v.rows,null,2))}</pre></details>`).join('')}</details>`:''}<form method="dialog" class="actions"><button>閉じる</button></form>`;$('#modal').innerHTML=html;$('#modal').showModal();}
+let lastRosterMobile=isMobileRoster();
+window.addEventListener('resize',()=>{const mobile=isMobileRoster();if(mobile!==lastRosterMobile){lastRosterMobile=mobile;memberColumns=null;applyRosterColumns(visibleRosterColumns());if(state&&page==='members'&&!detailId)render();}});
 window.addEventListener('beforeunload',e=>{if(dirty||busy||importRows.length){e.preventDefault();e.returnValue='';}});
 setInterval(()=>{if(state&&!demo&&store.hasSession()&&!busy&&!dirty&&!importRows.length&&document.visibilityState==='visible'&&!$('#modal').open)store.head().then(r=>{if(r.revision!==revision)return refresh();}).catch(e=>toast(e.message,true));},60000);
 loginView();if(store.auth)refresh().catch(e=>loginView(e.authExpired?'利用セッションが終了しました。合言葉と操作者名を入力してください。':e.message));
