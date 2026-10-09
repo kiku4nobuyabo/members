@@ -1,11 +1,22 @@
 // Group import: first worksheet, two header columns, exact Discord ID matching.
 const ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 const local=(node,name)=>[...node.getElementsByTagNameNS(ns,name)];
+// Excel stores optional readings as <rPh><t>...</t></rPh> in shared strings.
+// Only direct <t> and rich-text <r><t> runs contain the user's cell value.
+// Never treat phonetic markup as part of a group name or Discord ID.
+export function readVisibleExcelText(node){
+ return [...node.children].flatMap(child=>{
+  if(child.namespaceURI!==ns)return [];
+  if(child.localName==='t')return [child.textContent||''];
+  if(child.localName==='r')return local(child,'t').map(t=>t.textContent||'');
+  return []; // skip rPh (furigana), phoneticPr and formatting metadata
+ }).join('');
+}
 function xml(src){const doc=new DOMParser().parseFromString(src,'application/xml');if(doc.getElementsByTagName('parsererror').length)throw Error('ExcelのXMLが読み取れません');return doc;}
 function colIndex(ref){let n=0;for(const ch of (ref.match(/^[A-Z]+/i)||[''])[0].toUpperCase())n=n*26+ch.charCodeAt(0)-64;return n-1;}
 export async function parseGroupWorkbook(buffer,JSZip){if(!JSZip)throw Error('Excel読込ライブラリがありません');const zip=await JSZip.loadAsync(buffer);const get=async p=>{const f=zip.file(p);if(!f)throw Error('Excelの必要なファイルがありません：'+p);return xml(await f.async('string'));};
- const wb=await get('xl/workbook.xml'),rels=await get('xl/_rels/workbook.xml.rels');const sheet=local(wb,'sheet')[0];if(!sheet)throw Error('Excelにシートがありません');const relationshipId=sheet.getAttribute('r:id')||sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');const rel=[...rels.getElementsByTagName('*')].find(x=>x.localName==='Relationship'&&x.getAttribute('Id')===relationshipId);if(!rel)throw Error('シートが見つかりません');const target=rel.getAttribute('Target');const path=target.startsWith('/')?target.slice(1):'xl/'+target.replace(/^\.\//,'');if(path.includes('..'))throw Error('不正なシート参照です');const doc=await get(path);let strings=[];if(zip.file('xl/sharedStrings.xml')){const shared=await get('xl/sharedStrings.xml');strings=local(shared,'si').map(si=>local(si,'t').map(t=>t.textContent).join(''));}
- const rows=local(doc,'sheetData').flatMap(x=>local(x,'row')).map(r=>{const cells=[];for(const c of local(r,'c')){const i=colIndex(c.getAttribute('r')||'');if(i<0||i>150)continue;const t=c.getAttribute('t');let v=t==='inlineStr'?local(c,'t').map(x=>x.textContent).join(''):local(c,'v')[0]?.textContent||'';if(t==='s')v=strings[Number(v)]||'';cells[i]=v;if(!r.unsafeColumns)r.unsafeColumns=[];if((t===null||t==='n')&&/^\d{15,}$/.test(v))r.unsafeColumns.push(i);}return {row:Number(r.getAttribute('r')),cells,unsafeColumns:r.unsafeColumns||[]};});return rows;}
+ const wb=await get('xl/workbook.xml'),rels=await get('xl/_rels/workbook.xml.rels');const sheet=local(wb,'sheet')[0];if(!sheet)throw Error('Excelにシートがありません');const relationshipId=sheet.getAttribute('r:id')||sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');const rel=[...rels.getElementsByTagName('*')].find(x=>x.localName==='Relationship'&&x.getAttribute('Id')===relationshipId);if(!rel)throw Error('シートが見つかりません');const target=rel.getAttribute('Target');const path=target.startsWith('/')?target.slice(1):'xl/'+target.replace(/^\.\//,'');if(path.includes('..'))throw Error('不正なシート参照です');const doc=await get(path);let strings=[];if(zip.file('xl/sharedStrings.xml')){const shared=await get('xl/sharedStrings.xml');strings=local(shared,'si').map(readVisibleExcelText);}
+ const rows=local(doc,'sheetData').flatMap(x=>local(x,'row')).map(r=>{const cells=[];for(const c of local(r,'c')){const i=colIndex(c.getAttribute('r')||'');if(i<0||i>150)continue;const t=c.getAttribute('t');let v=t==='inlineStr'?(local(c,'is')[0]?readVisibleExcelText(local(c,'is')[0]):''):local(c,'v')[0]?.textContent||'';if(t==='s')v=strings[Number(v)]||'';cells[i]=v;if(!r.unsafeColumns)r.unsafeColumns=[];if((t===null||t==='n')&&/^\d{15,}$/.test(v))r.unsafeColumns.push(i);}return {row:Number(r.getAttribute('r')),cells,unsafeColumns:r.unsafeColumns||[]};});return rows;}
 // One Discord user may own several game accounts; update each account independently.
 // Repeated Excel rows with the same group are harmless and processed once.
 // Conflicting group assignments for the same Discord ID are never applied.
@@ -57,6 +68,9 @@ export function applyGroupImport(state,preview){
   if(!m||String(m.discordId||'').trim()!==r.id)throw Error('Discord IDが変更されました。読み直してください');
   m.group=r.group;updated.add(r.memberId);
  }
- next.groupNames=[...new Set([...(next.groupNames||[]),...preview.filter(r=>r.status!=='skip').map(r=>r.group)])].sort((a,b)=>a.localeCompare(b,'ja'));
+ // Once the corrected Excel is reimported, remove orphaned names that were
+ // previously stored with phonetic readings. Keep all groups still assigned
+ // to any member, including accounts absent from this spreadsheet.
+ next.groupNames=[...new Set(Object.values(next.members).map(m=>m.group).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
  return {next,count:updated.size};
 }
