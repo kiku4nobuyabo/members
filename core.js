@@ -1,4 +1,4 @@
-export const VERSION='0.3.0';
+export const VERSION='0.3.1';
 export const uid=()=>crypto.randomUUID();
 export const clone=x=>structuredClone(x);
 export const norm=x=>String(x??'').trim();
@@ -109,6 +109,26 @@ export function teamLabel(s,season,value){return teamDefs(s,season).find((t,i)=>
 export function teamId(s,season,value){return teamDefs(s,season).find((t,i)=>t.id===value||t.name===value||DEFAULT_TEAMS[i]===value)?.id||value;}
 export function memberRank(m){return {'本部':0,'幹部':1,'一般':2}[m.leadership]??2;}
 export function positionRank(m,season){return {'隊長':0,'副隊長':1,'一般':2}[m.teamPositions?.[season]]??2;}
+// 一般隊員欄: 一門役職を最優先し、同じ役職の中をグループ単位でまとめる。
+// グループ未設定のメンバーは各役職内の末尾へ。グループ名は描画しない。
+export function squadGeneralGroups(members){
+ const ordered=[...members].sort((a,b)=>{
+  const role=memberRank(a)-memberRank(b);if(role)return role;
+  const ga=String(a.group||'').trim(),gb=String(b.group||'').trim();
+  if(!ga||!gb){if(!ga&&gb)return 1;if(ga&&!gb)return -1;}
+  const group=ga.localeCompare(gb,'ja',{numeric:true});if(group)return group;
+  return a.name.localeCompare(b.name,'ja',{numeric:true});
+ });
+ const result=[];
+ for(const member of ordered){
+  const rank=memberRank(member),group=String(member.group||'').trim();
+  const last=result.at(-1);
+  if(last&&last.rank===rank&&last.group===group)last.members.push(member);
+  else result.push({rank,group,members:[member]});
+ }
+ return result;
+}
+
 // A selected team is a team roster: order by team post first.
 // The unfiltered clan roster keeps leadership priority.
 export function rosterRank(a,b,season,filteredTeam=false){return filteredTeam?(positionRank(a,season)-positionRank(b,season)||memberRank(a)-memberRank(b)):(memberRank(a)-memberRank(b));}

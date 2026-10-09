@@ -10,6 +10,12 @@
 .team-mark.white{border:1.5px solid #687775;box-shadow:inset 0 0 0 1px #fff}
 .squad-grid{align-items:start}.squad-card{min-width:0}.squad-head{justify-content:space-between;align-items:center;gap:12px}.squad-head h2{display:flex;align-items:center;gap:8px;margin:0}.squad-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0 9px}.squad-summary>div{background:#f3f6f2;border:1px solid var(--line);border-radius:9px;padding:10px}.squad-summary small{display:block;color:var(--muted);margin-bottom:4px}.squad-summary strong{font-size:19px;white-space:nowrap;font-variant-numeric:tabular-nums}.squad-actions{display:flex;justify-content:end;margin-bottom:12px}.squad-actions button{font-size:12px;padding:7px 12px}
 .squad-role{padding:11px 0;border-top:1px solid var(--line)}.squad-role>small{display:block;color:var(--muted);font-size:12px;margin-bottom:9px}.squad-names{display:flex;flex-wrap:wrap;gap:7px;align-items:center}.squad-names button.link{border:1px solid var(--line);background:#f9fbf8;padding:5px 9px;border-radius:7px;line-height:1.55;text-align:left;max-width:100%;overflow-wrap:anywhere}.squad-names .tag{font-size:10px}
+/* v0.3.1: 一般隊員を一門役職→グループ順に整理。グループ名は出さない。 */
+.squad-clusters{display:flex;flex-wrap:wrap;align-items:flex-start;gap:9px}
+.squad-cluster{display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:100%;padding:5px 7px;background:#f2f5f1;border:1px solid #e5ebe3;border-radius:9px}
+.squad-person{display:inline-flex;align-items:center;flex-wrap:wrap;gap:4px;max-width:100%}
+.squad-cluster button.link{border:1px solid var(--line);background:#fff;padding:5px 9px;border-radius:7px;line-height:1.55;text-align:left;overflow-wrap:anywhere;max-width:100%}
+.squad-leadership{font-size:10px;color:#31574e;background:#e1ebe5;border:1px solid #d0dfd5;border-radius:4px;padding:2px 5px;white-space:nowrap}
 .presence-event{border-left:3px solid #96b4a5;padding:7px 12px;margin:8px 0;background:#f5f8f5}.presence-event small{color:var(--muted)}
 .team-comparison-chart{overflow:visible}.team-comparison-chart path[stroke="#ffffff"]{filter:drop-shadow(1px 1px 0 #5a6360) drop-shadow(-1px -1px 0 #5a6360)}
 @media(max-width:680px){.squad-summary strong{font-size:17px}.squad-grid{display:block}.squad-grid>.panel{margin-bottom:14px}.squad-names button.link{padding:7px 10px}}
