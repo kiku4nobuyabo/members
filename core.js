@@ -1,4 +1,4 @@
-export const VERSION='0.2.5';
+export const VERSION='0.2.6';
 export const uid=()=>crypto.randomUUID();
 export const clone=x=>structuredClone(x);
 export const norm=x=>String(x??'').trim();

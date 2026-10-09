@@ -6,11 +6,57 @@ function colIndex(ref){let n=0;for(const ch of (ref.match(/^[A-Z]+/i)||[''])[0].
 export async function parseGroupWorkbook(buffer,JSZip){if(!JSZip)throw Error('Excel読込ライブラリがありません');const zip=await JSZip.loadAsync(buffer);const get=async p=>{const f=zip.file(p);if(!f)throw Error('Excelの必要なファイルがありません：'+p);return xml(await f.async('string'));};
  const wb=await get('xl/workbook.xml'),rels=await get('xl/_rels/workbook.xml.rels');const sheet=local(wb,'sheet')[0];if(!sheet)throw Error('Excelにシートがありません');const relationshipId=sheet.getAttribute('r:id')||sheet.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');const rel=[...rels.getElementsByTagName('*')].find(x=>x.localName==='Relationship'&&x.getAttribute('Id')===relationshipId);if(!rel)throw Error('シートが見つかりません');const target=rel.getAttribute('Target');const path=target.startsWith('/')?target.slice(1):'xl/'+target.replace(/^\.\//,'');if(path.includes('..'))throw Error('不正なシート参照です');const doc=await get(path);let strings=[];if(zip.file('xl/sharedStrings.xml')){const shared=await get('xl/sharedStrings.xml');strings=local(shared,'si').map(si=>local(si,'t').map(t=>t.textContent).join(''));}
  const rows=local(doc,'sheetData').flatMap(x=>local(x,'row')).map(r=>{const cells=[];for(const c of local(r,'c')){const i=colIndex(c.getAttribute('r')||'');if(i<0||i>150)continue;const t=c.getAttribute('t');let v=t==='inlineStr'?local(c,'t').map(x=>x.textContent).join(''):local(c,'v')[0]?.textContent||'';if(t==='s')v=strings[Number(v)]||'';cells[i]=v;if(!r.unsafeColumns)r.unsafeColumns=[];if((t===null||t==='n')&&/^\d{15,}$/.test(v))r.unsafeColumns.push(i);}return {row:Number(r.getAttribute('r')),cells,unsafeColumns:r.unsafeColumns||[]};});return rows;}
-export function previewGroupImport(state,rows){const header=rows.find(r=>r.cells.some(x=>String(x||'').trim()));if(!header)throw Error('Excelにデータがありません');const norm=x=>String(x??'').trim().replace(/\s+/g,'').toLowerCase();const ix=header.cells.findIndex(x=>['discordid','discordユーザーid'].includes(norm(x)));const gx=header.cells.findIndex(x=>['グループ','グループ名'].includes(norm(x)));if(ix<0||gx<0||ix===gx)throw Error('見出しに「Discord ID」「グループ」の2列が必要です');
- const ids=new Map();for(const m of Object.values(state.members)){const id=String(m.discordId||'').trim();if(!id)continue;if(!ids.has(id))ids.set(id,[]);ids.get(id).push(m);}
- const seen=new Map();const result=rows.filter(r=>r.row>header.row).map(r=>{const id=String(r.cells[ix]??'').trim(),group=String(r.cells[gx]??'').trim();if(!id&&!group)return null;let reason='',member=null;if(!id)reason='Discord IDが空欄';else if(!group)reason='グループが空欄';else if(r.unsafeColumns?.includes(ix)){reason='Discord IDが数値形式です。Excelで文字列にして再保存してください';}
-else{const matches=ids.get(id)||[];if(matches.length!==1)reason=matches.length?'名簿に同じDiscord IDが複数あります':'Discord IDが一致しません';else member=matches[0];}
- if(id){if(seen.has(id)){reason='Excel内でDiscord IDが重複';const first=seen.get(id);first.reason='Excel内でDiscord IDが重複';}else seen.set(id,{get reason(){return reason;},set reason(x){reason=x;}});}
- return {row:r.row,id,group,memberId:member?.id||'',name:member?.name||'',before:member?.group||'',get reason(){return reason;},set reason(v){reason=v;}};}).filter(Boolean);
- return result.map(r=>({...r,status:r.reason?'skip':r.before===r.group?'same':'update'}));}
-export function applyGroupImport(state,preview){const next=structuredClone(state);let count=0;for(const r of preview){if(r.status!=='update')continue;const m=next.members[r.memberId];if(!m||String(m.discordId||'').trim()!==r.id)throw Error('Discord IDが変更されました。読み直してください');m.group=r.group;count++;}next.groupNames=[...new Set([...(next.groupNames||[]),...preview.filter(r=>r.status!=='skip').map(r=>r.group)])].sort((a,b)=>a.localeCompare(b,'ja'));return {next,count};}
+// One Discord user may own several game accounts; update each account independently.
+// Repeated Excel rows with the same group are harmless and processed once.
+// Conflicting group assignments for the same Discord ID are never applied.
+export function previewGroupImport(state,rows){
+ const header=rows.find(r=>r.cells.some(x=>String(x||'').trim()));
+ if(!header)throw Error('Excelにデータがありません');
+ const norm=x=>String(x??'').trim().replace(/\s+/g,'').toLowerCase();
+ const ix=header.cells.findIndex(x=>['discordid','discordユーザーid'].includes(norm(x)));
+ const gx=header.cells.findIndex(x=>['グループ','グループ名'].includes(norm(x)));
+ if(ix<0||gx<0||ix===gx)throw Error('見出しに「Discord ID」「グループ」の2列が必要です');
+ const ids=new Map();
+ for(const m of Object.values(state.members)){
+  const id=String(m.discordId||'').trim();if(!id)continue;
+  if(!ids.has(id))ids.set(id,[]);
+  ids.get(id).push(m);
+ }
+ const inputs=rows.filter(r=>r.row>header.row).map(r=>({
+  row:r.row,id:String(r.cells[ix]??'').trim(),group:String(r.cells[gx]??'').trim(),unsafe:r.unsafeColumns?.includes(ix)??false
+ })).filter(r=>r.id||r.group);
+ const groupChoices=new Map();
+ for(const r of inputs){if(!r.id||!r.group)continue;
+  if(!groupChoices.has(r.id))groupChoices.set(r.id,new Set());
+  groupChoices.get(r.id).add(r.group);
+ }
+ const seen=new Set(),preview=[];
+ const skip=(r,reason)=>({row:r.row,id:r.id,group:r.group,memberId:'',name:'',before:'',reason,status:'skip'});
+ for(const r of inputs){
+  if(!r.id){preview.push(skip(r,'Discord IDが空欄'));continue;}
+  if(!r.group){preview.push(skip(r,'グループが空欄'));continue;}
+  if(r.unsafe){preview.push(skip(r,'Discord IDが数値形式です。Excelで文字列にして再保存してください'));continue;}
+  if(groupChoices.get(r.id)?.size>1){preview.push(skip(r,'Excel内で同じDiscord IDに異なるグループが指定されています'));continue;}
+  if(seen.has(r.id)){preview.push(skip(r,'Excel内の同じ指定は先の行に統合済み'));continue;}
+  seen.add(r.id);
+  const matches=ids.get(r.id)||[];
+  if(!matches.length){preview.push(skip(r,'Discord IDが一致しません'));continue;}
+  for(const member of matches){const before=member.group||'';
+   preview.push({row:r.row,id:r.id,group:r.group,memberId:member.id,name:member.name,before,
+    reason:'',status:before===r.group?'same':'update'});
+  }
+ }
+ return preview;
+}
+export function applyGroupImport(state,preview){
+ const next=structuredClone(state),updated=new Set();
+ for(const r of preview){
+  if(r.status!=='update')continue;
+  if(updated.has(r.memberId))throw Error('同じアカウントが複数回更新対象になっています。Excelを読み直してください');
+  const m=next.members[r.memberId];
+  if(!m||String(m.discordId||'').trim()!==r.id)throw Error('Discord IDが変更されました。読み直してください');
+  m.group=r.group;updated.add(r.memberId);
+ }
+ next.groupNames=[...new Set([...(next.groupNames||[]),...preview.filter(r=>r.status!=='skip').map(r=>r.group)])].sort((a,b)=>a.localeCompare(b,'ja'));
+ return {next,count:updated.size};
+}
