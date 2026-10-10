@@ -1,4 +1,4 @@
-import {membersIn,metrics,teamAt,orderedSnapshots,today,teamId,teamLabel,memberRank,positionRank} from './core.js';
+import {membersIn,metrics,teamAt,orderedSnapshots,today,teamId,teamLabel,memberRank,positionRank} from './core.js?v=0.3.5';
 const xml=v=>String(v??'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
 function col(n){let s='';for(n++;n;n=Math.floor((n-1)/26))s=String.fromCharCode(65+(n-1)%26)+s;return s;}
 function idx(c){let n=0;for(const x of c)n=n*26+x.charCodeAt(0)-64;return n-1;}
