@@ -1,4 +1,4 @@
-export const VERSION='0.3.5';
+export const VERSION='0.3.6';
 export const uid=()=>crypto.randomUUID();
 export const clone=x=>structuredClone(x);
 export const norm=x=>String(x??'').trim();
@@ -68,7 +68,7 @@ function teamRowsAt(s,season,team,snapshot){return (snapshot?.rows||[]).filter(r
  });}
 export function teamStats(s,season,team,snapshot){
  const rows=teamRowsAt(s,season,team,snapshot),stat=key=>{const nums=rows.filter(r=>r[key]!=null);return {total:nums.length?nums.reduce((sum,r)=>sum+r[key],0):null,count:nums.length,average:nums.length?nums.reduce((sum,r)=>sum+r[key],0)/nums.length:null};};
- return {team, date:snapshot?.date||'',rows,merit:stat('meritWeek'),activity:stat('activityWeek')};
+ return {team, date:snapshot?.date||'',rows,merit:stat('meritWeek'),activity:stat('activityWeek'),prestige:stat('prestige')};
 }
 export function teamSeries(s,season,team){return orderedSnapshots(s,season).map(snapshot=>teamStats(s,season,team,snapshot));}
 export function importSnapshot(state,{seasonId,date,rows,fileName,hash,encoding,replace=false}){const s=clone(state);assert(s.seasons[seasonId],'シーズンを選んでください');assert(validDate(date),'取得日を指定してください');
