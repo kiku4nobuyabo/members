@@ -83,3 +83,16 @@
 @media(max-width:1200px){.dashboard-cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(max-width:1000px){.dashboard-cards,.team-record-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:680px){.team-metric-grid{grid-template-columns:1fr}.team-metric-grid>.team-metric-wide{grid-column:auto}}
+
+
+/* Bulk season-progress editor (v0.3.7) */
+dialog.bulk-progress-dialog{max-width:980px}
+.bulk-progress-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:18px 0}
+.bulk-progress-toolbar{display:flex;align-items:end;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.bulk-progress-toolbar input{max-width:280px}
+.bulk-progress-toolbar strong{margin-left:auto;font-size:13px;color:var(--green)}
+.bulk-progress-list{max-height:52vh}
+.bulk-progress-list th{top:0;z-index:1}
+.bulk-progress-checkcol{width:64px;text-align:center}
+.bulk-progress-checkcol input{width:18px;height:18px}
+@media(max-width:680px){dialog.bulk-progress-dialog{width:calc(100% - 16px);padding:18px}.bulk-progress-controls{grid-template-columns:1fr}.bulk-progress-toolbar input{max-width:none;width:100%}.bulk-progress-toolbar strong{width:100%;margin-left:0}.bulk-progress-list{max-height:48vh}}
