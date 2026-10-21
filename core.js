@@ -1,4 +1,4 @@
-export const VERSION='0.3.7';
+export const VERSION='0.3.9';
 export const uid=()=>crypto.randomUUID();
 export const clone=x=>structuredClone(x);
 export const norm=x=>String(x??'').trim();
@@ -66,9 +66,15 @@ export function autoReturnCandidates(s,season,date,rows){
 function teamRowsAt(s,season,team,snapshot){return (snapshot?.rows||[]).filter(r=>{
  const m=s.members[r.memberId];return !!m&&teamId(s,season,teamAt(m,season,snapshot.date))===team;
  });}
+export function metricStats(rows,key){
+ const nums=rows.filter(r=>r[key]!=null).map(r=>r[key]).sort((a,b)=>a-b),count=nums.length;
+ if(!count)return {total:null,count:0,average:null,median:null,max:null,top3Total:null,top3Share:null};
+ const total=nums.reduce((sum,n)=>sum+n,0),mid=Math.floor(count/2),median=count%2?nums[mid]:(nums[mid-1]+nums[mid])/2,max=nums[count-1],top3Total=nums.slice(-3).reduce((sum,n)=>sum+n,0),top3Share=total>0?top3Total/total*100:0;
+ return {total,count,average:total/count,median,max,top3Total,top3Share};
+}
 export function teamStats(s,season,team,snapshot){
- const rows=teamRowsAt(s,season,team,snapshot),stat=key=>{const nums=rows.filter(r=>r[key]!=null);return {total:nums.length?nums.reduce((sum,r)=>sum+r[key],0):null,count:nums.length,average:nums.length?nums.reduce((sum,r)=>sum+r[key],0)/nums.length:null};};
- return {team, date:snapshot?.date||'',rows,merit:stat('meritWeek'),activity:stat('activityWeek'),prestige:stat('prestige')};
+ const rows=teamRowsAt(s,season,team,snapshot);
+ return {team, date:snapshot?.date||'',rows,merit:metricStats(rows,'meritWeek'),activity:metricStats(rows,'activityWeek'),prestige:metricStats(rows,'prestige')};
 }
 export function teamSeries(s,season,team){return orderedSnapshots(s,season).map(snapshot=>teamStats(s,season,team,snapshot));}
 export function importSnapshot(state,{seasonId,date,rows,fileName,hash,encoding,replace=false}){const s=clone(state);assert(s.seasons[seasonId],'シーズンを選んでください');assert(validDate(date),'取得日を指定してください');
@@ -146,3 +152,11 @@ export function squadGeneralGroups(members){
 export function rosterRank(a,b,season,filteredTeam=false){return filteredTeam?(positionRank(a,season)-positionRank(b,season)||memberRank(a)-memberRank(b)):(memberRank(a)-memberRank(b));}
 export function checksFor(s,season){return s.checkDefinitions?.[season]||DEFAULT_CHECKS;}
 export function checkCompleted(value){return value===true||['○','〇','済','完了','はい','yes','true','1'].includes(String(value??'').trim().toLowerCase());}
+export function setChecksBulk(state,season,memberIds,checkId,value){
+ const s=clone(state);assert(s.seasons[season],'シーズンが見つかりません');
+ const defs=checksFor(s,season);assert(defs.some(x=>x.id===checkId),'進捗項目が見つかりません');
+ assert(['','○','対象外'].includes(value),'進捗状態が不正です');
+ const ids=[...new Set(memberIds.map(String))];assert(ids.length,'対象メンバーを選択してください');
+ for(const id of ids){const m=s.members[id];assert(m&&m.memberships.some(x=>x.seasonId===season),'対象メンバーが見つかりません：'+id);m.checks??={};m.checks[season]={...(m.checks[season]||{}),[checkId]:value};}
+ validateState(s);return s;
+}
